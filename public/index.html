@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>APK Signature Tester</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      max-width: 900px;
+      margin: 20px auto;
+      padding: 0 20px;
+      background-color: #f5f5f5;
+    }
+    .container {
+      background-color: white;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      margin-bottom: 20px;
+    }
+    h1 {
+      color: #333;
+      border-bottom: 2px solid #eee;
+      padding-bottom: 10px;
+    }
+    .section {
+      margin-bottom: 30px;
+    }
+    label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: bold;
+    }
+    input[type="text"] {
+      width: 100%;
+      padding: 8px;
+      margin: 8px 0;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      box-sizing: border-box;
+    }
+    button {
+      background-color: #4CAF50;
+      color: white;
+      padding: 10px 15px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      margin-right: 10px;
+    }
+    button:hover {
+      background-color: #45a049;
+    }
+    button:disabled {
+      background-color: #ccc;
+      cursor: not-allowed;
+    }
+    .result {
+      margin-top: 10px;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      background-color: #f9f9f9;
+      word-break: break-all;
+    }
+    .error {
+      color: #d32f2f;
+      background-color: #ffebee;
+      padding: 10px;
+      border-radius: 4px;
+      margin-top: 10px;
+      display: none;
+    }
+    #logContainer {
+      background: #111;
+      color: #ddd;
+      font-family: monospace;
+      padding: 15px;
+      border-radius: 8px;
+      height: 250px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+    .log-info { color: #4CAF50; }
+    .log-warn { color: #FFC107; }
+    .log-error { color: #F44336; }
+    .log-debug { color: #03A9F4; }
+    pre {
+      background-color: #f0f0f0;
+      padding: 10px;
+      border-radius: 4px;
+      overflow-x: auto;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>APK Signature Tester</h1>
+
+    <div class="section">
+      <h2>1. Registrar Dispositivo</h2>
+      <label for="uuidInput">UUID del dispositivo:</label>
+      <input type="text" id="uuidInput" placeholder="Ingrese UUID del dispositivo" aria-describedby="uuidHelp" />
+      <small id="uuidHelp">Formato: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx</small>
+      <button onclick="registerDevice()">Registrar</button>
+      <div id="registerError" class="error"></div>
+      <div id="registerResult" class="result"></div>
+    </div>
+
+    <div class="section">
+      <h2>2. Obtener Master Key</h2>
+      <label for="signatureInput">Firma del dispositivo:</label>
+      <input type="text" id="signatureInput" placeholder="Ingrese la firma del dispositivo" />
+      <button onclick="getMasterKey()">Obtener Key</button>
+      <div id="keyError" class="error"></div>
+      <div id="keyResult" class="result"></div>
+    </div>
+
+    <div class="section">
+      <h2>3. Obtener Credenciales</h2>
+      <label for="signatureForCreds">Firma del dispositivo (para credenciales):</label>
+      <input type="text" id="signatureForCreds" placeholder="Ingrese la firma del dispositivo" />
+      <button onclick="getCredentials()">Obtener Credenciales</button>
+      <div id="credsError" class="error"></div>
+      <div id="credsResult" class="result"></div>
+    </div>
+
+    <div class="section">
+      <h2>🧩 Logger en tiempo real</h2>
+      <button onclick="clearLogs()">Limpiar Logs</button>
+      <button onclick="testFullFlow()">Probar Todo (Registro + Key)</button>
+      <div id="logContainer"></div>
+    </div>
+  </div>
+
+  <script>
+    // Variables globales para flujo secuencial
+    let currentSignature = '';
+    let currentEncryptedMasterKey = null;
+
+    // ---- Logger Visual ----
+    const logger = {
+      _log(level, tag, ...args) {
+        const logContainer = document.getElementById('logContainer');
+        const msg = `[${level}] ${new Date().toISOString()} [${tag}] ${args.join(' ')}\n`;
+        const div = document.createElement('div');
+        div.className = `log-${level.toLowerCase()}`;
+        div.textContent = msg;
+        logContainer.appendChild(div);
+        logContainer.scrollTop = logContainer.scrollHeight;
+      },
+      info(tag, ...args) { this._log('INFO', tag, ...args); },
+      warn(tag, ...args) { this._log('WARN', tag, ...args); },
+      error(tag, ...args) { this._log('ERROR', tag, ...args); },
+      debug(tag, ...args) { this._log('DEBUG', tag, ...args); },
+    };
+
+    function clearLogs() {
+      document.getElementById('logContainer').innerHTML = '';
+    }
+
+    function showError(elementId, message) {
+      const errorDiv = document.getElementById(elementId);
+      errorDiv.textContent = message;
+      errorDiv.style.display = 'block';
+    }
+
+    function hideError(elementId) {
+      document.getElementById(elementId).style.display = 'none';
+    }
+
+    function isValidUUID(uuid) {
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      return uuidRegex.test(uuid);
+    }
+
+    // Fetch con timeout
+    async function fetchWithTimeout(url, options, timeout = 15000) {
+      const controller = new AbortController();
+      const id = setTimeout(() => controller.abort(), timeout);
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      clearTimeout(id);
+      return response;
+    }
+
+    // Utilidades Crypto (Web Crypto API)
+    function hexToBytes(hex) {
+      if (!hex || hex.length % 2 !== 0) throw new Error('Hex string inválido');
+      const bytes = new Uint8Array(hex.length / 2);
+      for (let i = 0; i < hex.length; i += 2) {
+        bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
+      }
+      return bytes;
+    }
+
+    async function decryptData(encrypted, keyHex) {
+      if (!encrypted || !encrypted.iv || !encrypted.content || !encrypted.tag) {
+        throw new Error('Payload encriptado inválido: debe tener iv, content y tag');
+      }
+      if (keyHex.length !== 64 || !/^[0-9a-fA-F]+$/.test(keyHex)) {
+        throw new Error('Key debe ser una cadena hex de 64 caracteres (32 bytes)');
+      }
+
+      const keyData = hexToBytes(keyHex);
+      const key = await crypto.subtle.importKey(
+        'raw',
+        keyData,
+        { name: 'AES-GCM' },
+        false,
+        ['decrypt']
+      );
+
+      const iv = hexToBytes(encrypted.iv);
+      const content = hexToBytes(encrypted.content);
+      const tag = hexToBytes(encrypted.tag);
+
+      // Concatenar content + tag para Web Crypto (AES-GCM espera ciphertext con tag al final)
+      const ciphertext = new Uint8Array(content.length + tag.length);
+      ciphertext.set(content);
+      ciphertext.set(tag, content.length);
+
+      const decryptedBuffer = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv },
+        key,
+        ciphertext
+      );
+
+      return new TextDecoder().decode(decryptedBuffer);
+    }
+
+    // ---- Funciones principales ----
+    async function registerDevice() {
+      const uuid = document.getElementById('uuidInput').value.trim();
+      const errorDiv = document.getElementById('registerError');
+      const resultDiv = document.getElementById('registerResult');
+
+      hideError('registerError');
+      resultDiv.innerHTML = '';
+
+      if (!uuid) {
+        showError('registerError', 'Por favor ingrese un UUID');
+        return;
+      }
+
+      if (!isValidUUID(uuid)) {
+        showError('registerError', 'UUID inválido. Use formato estándar (ej: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx)');
+        return;
+      }
+
+      logger.info('registerDevice', `Iniciando registro con UUID: ${uuid}`);
+
+      try {
+        const response = await fetchWithTimeout('http://localhost:3000/devices/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uuid })
+        });
+
+        const data = await response.json();
+        logger.debug('registerDevice', 'Respuesta del servidor:', JSON.stringify(data));
+
+        if (!response.ok) {
+          throw new Error(data.error || 'Error al registrar dispositivo');
+        }
+
+        currentSignature = data.signature;
+        document.getElementById('signatureInput').value = data.signature;
+        document.getElementById('signatureForCreds').value = data.signature;
+
+        resultDiv.innerHTML = `<strong>Firma generada:</strong><br><pre>${JSON.stringify({ signature: data.signature }, null, 2)}</pre>`;
+
+        logger.info('registerDevice', `Registro exitoso. Firma: ${data.signature}`);
+      } catch (error) {
+        if (error.name === 'AbortError') {
+          showError('registerError', 'Timeout: El servidor tardó demasiado en responder');
+        } else {
+          showError('registerError', error.message);
+        }
+        logger.error('registerDevice', error.message);
+      }
+    }
+
+    async function getMasterKey() {
+      const signature = document.getElementById('signatureInput').value.trim();
+      const errorDiv = document.getElementById('keyError');
+      const resultDiv = document.getElementById('keyResult');
+
+      hideError('keyError');
+      resultDiv.innerHTML = '';
+
+      if (!signature || signature.length < 32) {
+        showError('keyError', 'Firma inválida o demasiado corta');
+        return;
+      }
+
+      logger.info('getMasterKey', `Solicitando master key con firma: ${signature.substring(0, 20)}...`);
+
+      try {
+        const response = await fetchWithTimeout('http://localhost:3000/keys/get', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ signature })
+        });
+
+        const data = await response.json();
+        logger.debug('getMasterKey', 'Respuesta del servidor:', JSON.stringify(data));
+
+        if (!response.ok) {
+          throw new Error(data.error || 'Error al obtener master key');
+        }
+
+        currentEncryptedMasterKey = data.masterKey;
+
+        resultDiv.innerHTML = `<strong>Master Key (encriptada):</strong><br><pre>${JSON.stringify(data.masterKey, null, 2)}</pre>`;
+        logger.info('getMasterKey', 'Master key obtenida correctamente.');
+      } catch (error) {
+        if (error.name === 'AbortError') {
+          showError('keyError', 'Timeout: El servidor tardó demasiado en responder');
+        } else {
+          showError('keyError', error.message);
+        }
+        logger.error('getMasterKey', error.message);
+      }
+    }
+
+    async function getCredentials() {
+  const signature = document.getElementById('signatureForCreds').value.trim();
+  const errorDiv = document.getElementById('credsError');
+  const resultDiv = document.getElementById('credsResult');
+
+  hideError('credsError');
+  resultDiv.innerHTML = '';
+
+  if (!signature || signature.length < 32) {
+    showError('credsError', 'Firma inválida o demasiado corta');
+    return;
+  }
+
+  if (!currentEncryptedMasterKey) {
+    showError('credsError', 'Primero obtenga la Master Key encriptada (sección 2)');
+    return;
+  }
+
+  logger.info('getCredentials', `Solicitando credenciales con firma: ${signature.substring(0, 20)}...`);
+
+  try {
+    // Paso 1: Desencriptar Master Key con signature como key (deviceKey)
+    const keyForMaster = signature.slice(0, 64);
+    const plainMasterKey = await decryptData(currentEncryptedMasterKey, keyForMaster);
+    logger.debug('getCredentials', 'Master Key desencriptada exitosamente', { masterKeyPreview: plainMasterKey.substring(0, 20) + '...' });
+
+    // Paso 2: Llamar al endpoint /credentials/get
+    const response = await fetchWithTimeout('http://localhost:3000/credentials/get', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ signature })
+    });
+
+    const data = await response.json();
+    logger.debug('getCredentials', 'Respuesta del servidor:', JSON.stringify(data, null, 2));
+
+    if (!response.ok) {
+      throw new Error(data.error || 'Error al obtener credenciales');
+    }
+
+    // Paso 3: Desencriptar cada credencial individual con plainMasterKey
+    const decryptedCreds = {};
+    if (data.credentials) {
+      for (const [key, encryptedValue] of Object.entries(data.credentials)) {
+        if (encryptedValue && encryptedValue.iv && encryptedValue.content && encryptedValue.tag) {
+          try {
+            decryptedCreds[key] = await decryptData(encryptedValue, plainMasterKey);
+            logger.debug('getCredentials', `Desencriptado ${key} exitosamente`);
+          } catch (decryptErr) {
+            logger.error('getCredentials', `Error desencriptando ${key}:`, decryptErr.message);
+            decryptedCreds[key] = `[Error desencriptando: ${decryptErr.message}]`;
+          }
+        } else if (encryptedValue === null) {
+          decryptedCreds[key] = null;
+        } else {
+          decryptedCreds[key] = encryptedValue; // Fallback si no es encriptado
+        }
+      }
+    } else {
+      throw new Error('Estructura de credenciales inválida en respuesta');
+    }
+
+    // Ignorar data.masterKey (ya la tenemos)
+
+    resultDiv.innerHTML = `<strong>Credenciales desencriptadas:</strong><br><pre>${JSON.stringify(decryptedCreds, null, 2)}</pre>`;
+    logger.info('getCredentials', 'Credenciales obtenidas y desencriptadas correctamente.', { keys: Object.keys(decryptedCreds) });
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      showError('credsError', 'Timeout: El servidor tardó demasiado en responder');
+    } else if (error.message.includes('Key must be') || error.message.includes('Hex string')) {
+      showError('credsError', 'Error en desencriptación: Verifique la firma y master key');
+    } else {
+      showError('credsError', error.message);
+    }
+    logger.error('getCredentials', error.message);
+  }
+}
+
+    async function testFullFlow() {
+      logger.info('testFullFlow', 'Iniciando flujo completo...');
+      await registerDevice();
+      // Pequeña pausa para que se complete el registro
+      setTimeout(async () => {
+        await getMasterKey();
+      }, 500);
+    }
+
+    // ---- Generar UUID por defecto ----
+    window.onload = function () {
+      const uuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+      });
+      document.getElementById('uuidInput').value = uuid;
+      logger.info('init', `UUID generado automáticamente: ${uuid}`);
+    };
+  </script>
+</body>
+</html>
